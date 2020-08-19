@@ -31,38 +31,48 @@ function countRunningForeground() {
 }
 
 function pingViaMac([string]$mac) {
-    $result = nping -v0 --hide-sent -icmp --dest-mac $mac 8.8.8.8
-    $avgRttLine = $result |  Select-String "Avg rtt"
-    $lostLine = $result | Select-String "Lost"
-
-    # Write-Host "Rtt => " $avgRttLine
-    # Write-Host "lost => " $lostLine
-
     $pingResult = @{
-        Lost     = 0
-        AvgRtt   = 0
+        Lost     = 100
+        AvgRtt   = 99999
     }
-
+    
     $resultObj = [pscustomobject]$pingResult
+    
+    Write-Host "pingViaMac => " $mac
+    
+    try {
+        $result = nping -v0 --hide-sent -icmp --dest-mac $mac 8.8.8.8
+        $avgRttLine = $result |  Select-String "Avg rtt"
+        $lostLine = $result | Select-String "Lost"
 
-    $maxRttPair, $minRttPair, $avgRttPair = $avgRttLine -split "\|", 3
-    $sentPair, $receivedPair, $lostPair = $lostLine -split "\|", 3
+        Write-Host "Rtt => " $avgRttLine
+        Write-Host "lost => " $lostLine
+        
+        if ($lostLine -eq $null) {
+            Write-Host "null lostline"
+            return $resultObj
+        }
 
-    $_, $lost = parseColonProperty($lostPair)
-    $_, $avgRtt = parseColonProperty($avgRttPair)
+        $maxRttPair, $minRttPair, $avgRttPair = $avgRttLine -split "\|", 3
+        $sentPair, $receivedPair, $lostPair = $lostLine -split "\|", 3
 
-    # example: 0 (0.00%) 
-    #    removes (0.00%)
-    $lost, $_ = $lost -split ' ', 2
-    $resultObj.Lost = [int]$lost
-    if ($avgRtt -eq 'N/A') {
-        $resultObj.AvgRtt = 0
-    } else {
-        $resultObj.AvgRtt = [int]($avgRtt -replace 'ms', '')
+        $_, $lost = parseColonProperty($lostPair)
+        $_, $avgRtt = parseColonProperty($avgRttPair)
+
+        # example: 0 (0.00%) 
+        #    removes (0.00%)
+        $lost, $_ = $lost -split ' ', 2
+        $resultObj.Lost = [int]$lost
+        if ($avgRtt -eq 'N/A') {
+            $resultObj.AvgRtt = 0
+        } else {
+            $resultObj.AvgRtt = [int]($avgRtt -replace 'ms', '')
+        }
+    } catch {
     }
 
-    # Write-Host "avg => " $avgRtt
-    # Write-Host "lost => " $lost
+    Write-Host "avg => " $avgRtt ", lost => " $lost
+    Write-Host "resultObj => " $resultObj
 
     return $resultObj
 }
@@ -77,11 +87,17 @@ function parseColonProperty([string]$pair) {
 }
 
 function getGwMetric([string]$gw) {
+    if ($gw -eq $null) {
+        return 0
+    }
     Write-Host "getGwMetric " $gw 
     return (Get-NetAdapter $source_interface | Get-NetRoute -NextHop $gw).RouteMetric
 }
 
 function ensureGatewayHaveMetric([string]$gw, [int]$metric) {
+    if ($gw -eq $null -or $gw -eq "") {
+        return
+    }
     $currentMetric = getGwMetric($gw)
     if ($metric -ne $currentMetric) {
         Write-Host "ensuring " $gw " have metric " $metric
@@ -112,7 +128,7 @@ function doWork() {
         }
     }
 
-    # Write-Host "try to switch to default route"
+    Write-Host "try to switch to default route"
 
     if ($pingResult1.Lost -ne $pingResult2.Lost) {
         if ($pingResult1.Lost -lt $pingResult2.Lost) {
@@ -130,10 +146,11 @@ function doWork() {
         $echoResult = $useMac2
     } else {
         # both are somewhat slow
+        Write-Host "both are somewhat slow"
         return
     }
     
-    Write-Host $echoResult
+    Write-Host "echoResult =>" $echoResult
 
     if ($echoResult -eq $useMac2) {
         $currentMetric = getGwMetric($ipaddress_mac2)
@@ -144,8 +161,8 @@ function doWork() {
             return
         }
         Write-Host "switching default to mac2 with IP " $ipaddress_mac2
-        Get-NetAdapter $source_interface | Set-NetRoute -NextHop $ipaddress_mac1 -RouteMetric 10
-        Get-NetAdapter $source_interface | Set-NetRoute -NextHop $ipaddress_mac2 -RouteMetric 5
+        ensureGatewayHaveMetric $ipaddress_mac1 10
+        ensureGatewayHaveMetric $ipaddress_mac2 5
         
     } else {
         $currentMetric = getGwMetric($ipaddress_mac1)
@@ -156,8 +173,8 @@ function doWork() {
             return
         }
         Write-Host "switching default to mac1 with IP " $ipaddress_mac1
-        Get-NetAdapter $source_interface | Set-NetRoute -NextHop $ipaddress_mac1 -RouteMetric 5
-        Get-NetAdapter $source_interface | Set-NetRoute -NextHop $ipaddress_mac2 -RouteMetric 10
+        ensureGatewayHaveMetric $ipaddress_mac1 5
+        ensureGatewayHaveMetric $ipaddress_mac2 10
     }
 }
 
